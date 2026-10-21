@@ -261,6 +261,13 @@ code {
   font-size: 0.92em;
 }
 
+/* Preserve intentional line breaks in preformatted chat text (for example
+   multi-line user prompts). ChatGPT expresses this with a Tailwind class that
+   is not part of the PDF stylesheet. */
+.message [class*="whitespace-pre-wrap"] {
+  white-space: pre-wrap;
+}
+
 p code,
 li code,
 h1 code,

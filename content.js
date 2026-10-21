@@ -40,6 +40,19 @@
       }
     });
 
+    // ChatGPT sometimes renders fenced code blocks (including ASCII diagrams)
+    // as a block-level <code class="... CodeContent ..."> instead of a <pre>.
+    // The PDF stylesheet preserves whitespace on <pre>, so wrap those code
+    // elements before the markup leaves the ChatGPT page.
+    wrapper.querySelectorAll('code').forEach((code) => {
+      if (code.closest('pre')) return;
+      if (!/\n/.test(code.textContent || '')) return;
+
+      const pre = document.createElement('pre');
+      pre.appendChild(code.cloneNode(true));
+      code.replaceWith(pre);
+    });
+
     wrapper.querySelectorAll('img').forEach((img) => {
       img.style.maxWidth = '100%';
       img.style.height = 'auto';
@@ -89,11 +102,18 @@
     return (el.textContent || '').trim();
   }
 
+  function isInsideUserMessage(el) {
+    if (!el || el.nodeType !== 1) return false;
+    return Boolean(el.closest(
+      '[class*="bg-user-message"], [class*="text-user-message"], [class*="group/user-message"]'
+    ));
+  }
+
   /**
    * Read the speaker from the semantic markers ChatGPT has used across its
    * recent layouts. data-message-author-role is still around in places, but
-   * assistant replies are now also marked with data-markdown-text-style,
-   * data-chatgpt-search-unit-key and the Dil renderer attributes.
+   * newer layouts only expose class names such as group/user-message and
+   * MarkdownRoot-XXXX for the two sides of the conversation.
    */
   function explicitRole(el) {
     if (!el || el.nodeType !== 1) return null;
@@ -125,6 +145,7 @@
     const cls = (el.getAttribute('class') || '').toLowerCase();
     if (/(assistant-message|chatgpt-message|dilresponse|response-root|agent-turn|assistant-turn)/.test(cls)) return 'assistant';
     if (/(user-message|dilprompt|prompt-root|user-turn)/.test(cls)) return 'user';
+    if (cls.includes('markdownroot')) return isInsideUserMessage(el) ? 'user' : 'assistant';
 
     // Dil renderer nodes are usually assistant responses, but prompt roots use
     // the same message-id attribute, so check the class first (above).
@@ -157,26 +178,41 @@
     return explicitRole(nested);
   }
 
+  function hasMessageMarkers(root) {
+    return Boolean(root.querySelector(
+      '[data-message-author-role], [data-turn], [data-markdown-text-style], ' +
+      '[data-user-message-bubble], [class*="bg-user-message"], [class*="text-user-message"], ' +
+      '[class*="group/user-message"], [class*="MarkdownRoot"]'
+    ));
+  }
+
   function getConversationRoot() {
+    // main is the reliable outer boundary in both the older and the current
+    // ChatGPT layouts. data-thread-find-target="conversation" can point at a
+    // navigation/preview container that does not hold the rendered messages,
+    // so only accept a candidate that actually contains message markers.
+    const main = document.querySelector('main, [role="main"]');
+    if (main && hasMessageMarkers(main)) return main;
+
     const selectors = [
       '[data-thread-find-target="conversation"]',
       '#thread',
-      '[data-testid="thread"]',
-      'main'
+      '[data-testid="thread"]'
     ];
 
     for (const selector of selectors) {
       const el = document.querySelector(selector);
-      if (el) return el;
+      if (el && hasMessageMarkers(el)) return el;
     }
 
     return document.body;
   }
 
   function isExcludedRegion(el) {
-    return Boolean(el.closest(
-      'nav, aside, [role="navigation"], [data-thread-user-message-navigation-content]'
-    ));
+    // Note: do NOT exclude [data-thread-user-message-navigation-content] or
+    // [role="navigation"]. Despite their names, ChatGPT uses those markers on
+    // the thread content wrapper that holds the real messages.
+    return Boolean(el.closest('nav, aside'));
   }
 
   function findMessageWrapper(el) {
@@ -273,6 +309,8 @@
       ? [
           '[data-markdown-text-style="user-message"]',
           '[data-user-message-bubble]',
+          '[class*="bg-user-message"]',
+          '[class*="text-user-message"]',
           '.whitespace-pre-wrap',
           '.break-words',
           '[class*="text-message"]',
@@ -281,6 +319,7 @@
       : [
           '[data-markdown-text-style="assistant-message"]',
           '[data-dil-message-id]',
+          '[class*="MarkdownRoot"]',
           '.markdown',
           '.prose',
           '[class*="prose"]',
@@ -349,11 +388,22 @@
       selector: '[data-turn="user"], [data-turn="assistant"]',
       priority: 6,
       role: explicitRole
+    },
+    {
+      // Current Oct-2026 layout: user bubbles keep a user-message class while
+      // assistant replies are rendered inside a MarkdownRoot-XXXX container.
+      selector: '[class*="bg-user-message"], [class*="text-user-message"], ' +
+        '[class*="group/user-message"], [class*="MarkdownRoot"]',
+      priority: 7,
+      role: explicitRole
     }
   ];
 
   function resolveContentElement(el, role) {
-    if (el.matches('[data-markdown-text-style], [data-dil-message-id], [data-user-message-bubble]')) {
+    if (el.matches(
+      '[data-markdown-text-style], [data-dil-message-id], [data-user-message-bubble], ' +
+      '[class*="bg-user-message"], [class*="MarkdownRoot"]'
+    )) {
       return el;
     }
 
@@ -368,6 +418,8 @@
   function extractByRoleMarkers() {
     const root = getConversationRoot();
     const candidates = [];
+    let rawCandidates = 0;
+    let excludedCandidates = 0;
 
     ROLE_MARKER_GROUPS.forEach((group) => {
       let nodes;
@@ -378,7 +430,12 @@
       }
 
       nodes.forEach((el) => {
-        if (isExcludedRegion(el)) return;
+        rawCandidates += 1;
+
+        if (isExcludedRegion(el)) {
+          excludedCandidates += 1;
+          return;
+        }
 
         const role = group.role(el) || roleFromTree(el);
         if (role !== 'user' && role !== 'assistant') return;
@@ -390,7 +447,11 @@
       });
     });
 
-    log('Role-marker candidates:', candidates.length);
+    log(
+      'Role-marker candidates:', candidates.length,
+      '| raw:', rawCandidates,
+      '| excluded:', excludedCandidates
+    );
 
     // One logical message can match several markers (for example an assistant
     // content root inside a Dil response root). Keep the best marker per
@@ -708,7 +769,8 @@
       '[class*="user-message"], [class*="assistant-message"], ' +
       '[class*="chatgpt-message"], [class*="bot-message"], ' +
       '[class*="response-message"], [data-virtualized-turn-content], ' +
-      '[data-dil-message-id], [class*="DilResponseRoot"], [class*="DilPromptRoot"]'
+      '[data-dil-message-id], [class*="DilResponseRoot"], [class*="DilPromptRoot"], ' +
+      '[class*="MarkdownRoot"]'
     )).filter((el) => !isExcludedRegion(el));
 
     log('Message-class elements found:', messageEls.length);
