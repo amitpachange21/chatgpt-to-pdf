@@ -288,6 +288,76 @@ pre code {
   font-size: inherit;
 }
 
+/* Prism syntax highlighting — dark palette matching the code block. */
+.token.comment,
+.token.prolog,
+.token.doctype,
+.token.cdata {
+  color: #9ca3af;
+}
+
+.token.punctuation {
+  color: #e5e7eb;
+}
+
+.token.tag,
+.token.attr-name,
+.token.namespace,
+.token.deleted {
+  color: #fca5a5;
+}
+
+.token.function-name {
+  color: #93c5fd;
+}
+
+.token.boolean,
+.token.number,
+.token.function {
+  color: #fdba74;
+}
+
+.token.property,
+.token.class-name,
+.token.constant,
+.token.symbol {
+  color: #fde68a;
+}
+
+.token.selector,
+.token.important,
+.token.atrule,
+.token.keyword,
+.token.builtin {
+  color: #c4b5fd;
+}
+
+.token.string,
+.token.char,
+.token.attr-value,
+.token.regex,
+.token.variable {
+  color: #86efac;
+}
+
+.token.operator,
+.token.entity,
+.token.url {
+  color: #67e8f9;
+}
+
+.token.inserted {
+  color: #86efac;
+}
+
+.token.bold {
+  font-weight: 700;
+}
+
+.token.italic {
+  font-style: italic;
+}
+
 /* Tables */
 table {
   width: 100%;
@@ -342,6 +412,7 @@ tr:nth-child(even) {
   .user-turn .message,
   .assistant-turn .message,
   pre,
+  .token,
   th,
   tr:nth-child(even) {
     -webkit-print-color-adjust: exact !important;

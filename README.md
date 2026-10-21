@@ -7,6 +7,7 @@ A Chrome extension that exports ChatGPT conversations to PDF while preserving fo
 - **Select loaded messages**: Only the chat turns currently rendered in the ChatGPT viewport are extracted.
 - **Granular selection**: Choose individual user prompts and/or ChatGPT responses.
 - **Preserves formatting**: Code blocks, inline code, tables, lists, blockquotes, and images keep their structure in the PDF.
+- **Syntax highlighting**: Code blocks are colored by language, including Java, SQL, Python, JavaScript/TypeScript, JSON, Bash, C#, C/C++, Go, Rust, YAML, Markdown, HTML, and CSS.
 - **ChatGPT-like layout**: User messages appear on the right, ChatGPT responses on the left.
 - **Simple workflow**: Click Export → select messages → click Done → print/save as PDF.
 
@@ -44,5 +45,6 @@ A Chrome extension that exports ChatGPT conversations to PDF while preserving fo
 - `popup.html/js/css` — Extension popup with the Export button.
 - `selector.html/js/css` — Message selection window.
 - `pdf.html/js/css` — Print-ready preview page.
+- `libs/prism/` — Bundled Prism.js syntax highlighter and language grammars.
 - `background.js` — Service worker.
 - `icons/` — Toolbar icons.

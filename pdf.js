@@ -62,6 +62,14 @@
       turns.forEach((item) => {
         conversation.appendChild(renderTurn(item));
       });
+
+      if (window.Prism && typeof window.Prism.highlightAllUnder === 'function') {
+        try {
+          window.Prism.highlightAllUnder(conversation);
+        } catch (err) {
+          console.error('Syntax highlighting failed:', err);
+        }
+      }
     });
   }
 

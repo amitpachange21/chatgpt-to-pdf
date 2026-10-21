@@ -27,6 +27,281 @@
     }
   }
 
+  const CODE_LANGUAGE_ALIASES = {
+    java: 'java',
+    sql: 'sql',
+    mysql: 'sql',
+    postgresql: 'sql',
+    postgres: 'sql',
+    plsql: 'sql',
+    tsql: 'sql',
+    javascript: 'javascript',
+    js: 'javascript',
+    jsx: 'javascript',
+    typescript: 'typescript',
+    ts: 'typescript',
+    tsx: 'typescript',
+    python: 'python',
+    py: 'python',
+    json: 'json',
+    bash: 'bash',
+    shell: 'bash',
+    sh: 'bash',
+    zsh: 'bash',
+    csharp: 'csharp',
+    'c#': 'csharp',
+    c: 'c',
+    cpp: 'cpp',
+    'c++': 'cpp',
+    go: 'go',
+    golang: 'go',
+    rust: 'rust',
+    yaml: 'yaml',
+    yml: 'yaml',
+    html: 'markup',
+    xml: 'markup',
+    svg: 'markup',
+    css: 'css',
+    markdown: 'markdown',
+    md: 'markdown'
+  };
+
+  const CODE_PLAIN_TEXT_LABELS = new Set([
+    'plain text', 'plaintext', 'plain', 'text', 'txt', 'none'
+  ]);
+
+  const CODE_LANGUAGE_ATTRIBUTES = [
+    'data-language', 'data-lang', 'data-code-language', 'data-highlight-language'
+  ];
+
+  /**
+   * Turn a class/attribute/header value into a Prism language id.
+   * Returns null for an explicit "Plain text" block and undefined when the
+   * value is not a language label at all.
+   */
+  function normalizeCodeLanguage(value) {
+    if (value === null || value === undefined) return undefined;
+
+    let label = String(value).replace(/\s+/g, ' ').trim().toLowerCase();
+    if (!label || label.length > 30) return undefined;
+
+    label = label
+      .replace(/^(?:language|lang)\s*[:\-]\s*/i, '')
+      .replace(/\s+(?:code|snippet)$/i, '')
+      .replace(/\s+copy(?:\s+code)?$/i, '')
+      .trim();
+
+    if (!label) return undefined;
+    if (CODE_PLAIN_TEXT_LABELS.has(label)) return null;
+
+    if (CODE_LANGUAGE_ALIASES[label]) return CODE_LANGUAGE_ALIASES[label];
+
+    // Labels such as "Java code" or "SQL query".
+    const firstWord = label.split(/\s+/)[0];
+    return CODE_LANGUAGE_ALIASES[firstWord] || undefined;
+  }
+
+  function languageFromClassNames(node) {
+    const className = node && node.getAttribute ? node.getAttribute('class') : '';
+    if (!className) return undefined;
+
+    const match = className.match(/(?:^|\s)(?:language|lang)-([a-z0-9+#._-]+)/i);
+    if (!match) return undefined;
+
+    return normalizeCodeLanguage(match[1]);
+  }
+
+  function detectLanguageFromNodeAttributes(node, stopAt) {
+    let current = node;
+
+    for (let depth = 0; current && current !== stopAt && depth < 5; depth += 1, current = current.parentElement) {
+      const fromClass = languageFromClassNames(current);
+      if (fromClass !== undefined) return fromClass;
+
+      for (const attr of CODE_LANGUAGE_ATTRIBUTES) {
+        const fromAttribute = normalizeCodeLanguage(current.getAttribute(attr));
+        if (fromAttribute !== undefined) return fromAttribute;
+      }
+    }
+
+    return undefined;
+  }
+
+  /**
+   * Collect short text nodes/elements immediately around a code block. ChatGPT
+   * renders the language name (Java, SQL, Plain text, ...) in a small header
+   * above the code, and its exact wrapper changes between releases.
+   */
+  function getCodeLabelCandidates(code, wrapper) {
+    const candidates = [];
+    const seen = new Set();
+
+    const add = (el) => {
+      if (!el || el === code || el.contains(code) || seen.has(el)) return;
+      seen.add(el);
+      candidates.push(el);
+    };
+
+    const pre = code.closest('pre');
+    if (pre) {
+      add(pre.previousElementSibling);
+
+      const parent = pre.parentElement;
+      if (parent && parent !== wrapper) {
+        add(parent.previousElementSibling);
+        Array.from(parent.children).forEach((child) => {
+          if (child === pre || child.contains(pre)) return;
+          add(child);
+        });
+      }
+    }
+
+    let node = code;
+    for (let depth = 0; node && node !== wrapper && depth < 4; depth += 1, node = node.parentElement) {
+      add(node.previousElementSibling);
+    }
+
+    return candidates;
+  }
+
+  function detectCodeLanguageFromText(text) {
+    const src = (text || '').trim();
+    if (!src) return null;
+
+    // JSON is the most reliable signal when the whole block parses.
+    const trimmed = src.trim();
+    if ((trimmed.startsWith('{') && trimmed.endsWith('}')) ||
+        (trimmed.startsWith('[') && trimmed.endsWith(']'))) {
+      try {
+        JSON.parse(trimmed);
+        return 'json';
+      } catch (_) {
+        // Not valid JSON; keep looking.
+      }
+    }
+
+    // C/C++.
+    if (/^\s*#\s*include\s*[<"]/m.test(src) ||
+        /\bstd::|using\s+namespace\s+std\b/.test(src)) {
+      return 'cpp';
+    }
+
+    // C#.
+    if (/\busing\s+System\b|\bConsole\.(?:Write|Read)|\bnamespace\s+[\w.]+\s*[;{]/m.test(src)) {
+      return 'csharp';
+    }
+
+    // Java.
+    if (/\b(?:import\s+java\.|System\.out\.print|public\s+static\s+void\s+main\b|@Override\b|^\s*package\s+[\w.]+\s*;|(?:public|private|protected)\s+(?:static\s+)?(?:final\s+)?(?:class|interface|enum|record)\b|\b(?:public\s+|private\s+|protected\s+)?(?:abstract\s+|final\s+|static\s+)*(?:class|interface|enum|record)\s+[A-Z]\w*\b)/im.test(src)) {
+      return 'java';
+    }
+
+    // TypeScript (before JavaScript, because type annotations are distinctive).
+    if (/\b(?:interface|type)\s+\w+\s*[={]|\b:\s*(?:string|number|boolean|void|any|unknown|never)\b/.test(src)) {
+      return 'typescript';
+    }
+
+    // JavaScript.
+    if (/\b(?:const|let|var)\s+\w+\s*=|=>|\bfunction\s+\w+\s*\(/.test(src)) {
+      return 'javascript';
+    }
+
+    // Python.
+    if (/^\s*(?:def|class)\s+\w+.*:/m.test(src) || /^\s*(?:from\s+\w+\s+import|import\s+\w+)/m.test(src)) {
+      return 'python';
+    }
+
+    // Bash/shell.
+    if (/^#!.*\b(?:ba|z)?sh\b/m.test(src) || /^\s*(?:\$|>)\s+\w+/m.test(src)) {
+      return 'bash';
+    }
+
+    // SQL.
+    if (/\b(?:SELECT\b[\s\S]{0,500}?\bFROM\b|INSERT\s+INTO\b|UPDATE\s+\w+\s+SET\b|DELETE\s+FROM\b|CREATE\s+(?:TABLE|VIEW|INDEX)\b|ALTER\s+TABLE\b|DROP\s+(?:TABLE|VIEW|INDEX)\b|WITH\s+\w+\s+AS\s*\()/i.test(src)) {
+      return 'sql';
+    }
+
+    // CSS.
+    if (/^\s*[.#]?[a-z][\w-]*(?:\s+[^{]+)?\s*\{[^}]*:[^}]*\}/i.test(src)) {
+      return 'css';
+    }
+
+    // HTML/XML.
+    if (/^\s*<(!doctype|[a-z][\w:-]*)[\s>]/i.test(src)) {
+      return 'markup';
+    }
+
+    return null;
+  }
+
+  function applyCodeLanguages(wrapper) {
+    wrapper.querySelectorAll('pre > code').forEach((code) => {
+      let language = detectLanguageFromNodeAttributes(code, wrapper);
+      let labelElement = null;
+
+      const candidates = getCodeLabelCandidates(code, wrapper);
+
+      for (const candidate of candidates) {
+        const text = (candidate.textContent || '').replace(/\s+/g, ' ').trim();
+        if (!text || text.length > 40) continue;
+
+        const parsed = normalizeCodeLanguage(text);
+        if (parsed === undefined) continue;
+
+        if (language === undefined) language = parsed;
+        labelElement = candidate;
+        break;
+      }
+
+      // If ChatGPT did not label the block (or labelled it "Plain text"),
+      // infer Java/SQL/etc. from the code itself.
+      if (language === undefined || language === null) {
+        const inferred = detectCodeLanguageFromText(code.textContent || '');
+        if (inferred) language = inferred;
+      }
+
+      if (language) {
+        Array.from(code.classList).forEach((className) => {
+          if (/^(?:language|lang)-/i.test(className)) code.classList.remove(className);
+        });
+        code.classList.add('language-' + language);
+      }
+
+      // Remove the small language header above the block ("Java", "Plain
+      // text", ...). Never remove a paragraph or heading (those can be real
+      // answer content), and only remove a direct code-block header.
+      if (labelElement) {
+        const pre = code.closest('pre');
+        let isDirectHeader = Boolean(
+          pre && pre.parentElement && labelElement.parentElement === pre.parentElement
+        );
+
+        if (!isDirectHeader && pre) {
+          let node = pre;
+
+          for (let depth = 0; node && node !== wrapper && depth < 3; depth += 1, node = node.parentElement) {
+            if (labelElement === node.previousElementSibling) {
+              isDirectHeader = true;
+              break;
+            }
+          }
+        }
+
+        const isContentElement = /^(P|H[1-6])$/.test(labelElement.tagName);
+
+        if (isDirectHeader && !isContentElement) {
+          const parent = labelElement.parentElement;
+          labelElement.remove();
+
+          if (parent && parent !== wrapper && !parent.textContent.trim() &&
+              !parent.querySelector('pre, code')) {
+            parent.remove();
+          }
+        }
+      }
+    });
+  }
+
   function cleanHtml(html) {
     const wrapper = document.createElement('div');
     wrapper.innerHTML = html;
@@ -46,12 +321,20 @@
     // elements before the markup leaves the ChatGPT page.
     wrapper.querySelectorAll('code').forEach((code) => {
       if (code.closest('pre')) return;
-      if (!/\n/.test(code.textContent || '')) return;
+
+      const classTokens = (code.getAttribute('class') || '').split(/\s+/);
+      const isBlockCode = classTokens.includes('block') ||
+        classTokens.includes('whitespace-pre') ||
+        classTokens.includes('whitespace-pre!');
+
+      if (!isBlockCode && !/\n/.test(code.textContent || '')) return;
 
       const pre = document.createElement('pre');
       pre.appendChild(code.cloneNode(true));
       code.replaceWith(pre);
     });
+
+    applyCodeLanguages(wrapper);
 
     wrapper.querySelectorAll('img').forEach((img) => {
       img.style.maxWidth = '100%';
