@@ -1,4 +1,4 @@
-# ChatGPT to PDF Exporter
+# ChatGPT to PDF Chrome Extension
 
 A Chrome extension that exports ChatGPT conversations to PDF while preserving formatting, code blocks, and tables.
 
