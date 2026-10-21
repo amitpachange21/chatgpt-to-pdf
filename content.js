@@ -1,0 +1,948 @@
+(function () {
+  'use strict';
+
+  const DEBUG = true;
+
+  const UI_SELECTORS = [
+    'button',
+    '[role="button"]',
+    '[class*="copy"]',
+    '[class*="thumbs"]',
+    '[class*="feedback"]',
+    '[class*="regenerate"]',
+    '[class*="clipboard"]',
+    '[class*="code-header"]',
+    '[data-testid*="copy-turn"]',
+    '[data-testid*="good-response"]',
+    '[data-testid*="bad-response"]',
+    '[data-testid*="regenerate"]',
+    'svg[class*="icon"]',
+    '.sr-only',
+    '[aria-hidden="true"]'
+  ];
+
+  function log(...args) {
+    if (DEBUG) {
+      console.log('[ChatGPT to PDF]', ...args);
+    }
+  }
+
+  function cleanHtml(html) {
+    const wrapper = document.createElement('div');
+    wrapper.innerHTML = html;
+
+    wrapper.querySelectorAll(UI_SELECTORS.join(',')).forEach((el) => {
+      const text = (el.textContent || '').trim();
+      if (el.tagName === 'BUTTON' || el.getAttribute('role') === 'button') {
+        el.remove();
+      } else if (text.length === 0 || text.length <= 2) {
+        el.remove();
+      }
+    });
+
+    wrapper.querySelectorAll('img').forEach((img) => {
+      img.style.maxWidth = '100%';
+      img.style.height = 'auto';
+      img.removeAttribute('srcset');
+    });
+
+    return wrapper.innerHTML;
+  }
+
+  /**
+   * Clean a message's HTML and derive its plain text from the cleaned markup,
+   * so toolbar labels such as "Copy" do not end up in the preview or PDF.
+   */
+  function getCleanContent(el) {
+    const html = cleanHtml(el.innerHTML);
+    const wrapper = document.createElement('div');
+    wrapper.innerHTML = html;
+
+    // textContent does not add line breaks between block elements; insert
+    // them so multi-paragraph answers stay readable in the preview.
+    wrapper.querySelectorAll(
+      'p, div, section, article, li, tr, h1, h2, h3, h4, h5, h6, blockquote, pre, table'
+    ).forEach((node) => {
+      node.appendChild(document.createTextNode('\n'));
+    });
+
+    const text = (wrapper.textContent || '')
+      .replace(/\u00a0/g, ' ')
+      .replace(/[ \t]+\n/g, '\n')
+      .replace(/\n{3,}/g, '\n\n')
+      .trim();
+
+    return { text, html };
+  }
+
+  function hasVisibleText(el) {
+    return getVisibleText(el).length > 0;
+  }
+
+  function getVisibleText(el) {
+    if (!el) return '';
+    // innerText respects CSS visibility, but ChatGPT's reveal animations can
+    // temporarily make an answer's innerText empty even though its text is in
+    // the DOM, so fall back to textContent.
+    const inner = (el.innerText || '').trim();
+    if (inner.length > 0) return inner;
+    return (el.textContent || '').trim();
+  }
+
+  /**
+   * Read the speaker from the semantic markers ChatGPT has used across its
+   * recent layouts. data-message-author-role is still around in places, but
+   * assistant replies are now also marked with data-markdown-text-style,
+   * data-chatgpt-search-unit-key and the Dil renderer attributes.
+   */
+  function explicitRole(el) {
+    if (!el || el.nodeType !== 1) return null;
+
+    const author = (el.getAttribute('data-message-author-role') || '').toLowerCase();
+    if (author === 'user' || author === 'assistant') return author;
+
+    const turn = (el.getAttribute('data-turn') || '').toLowerCase();
+    if (turn === 'user' || turn === 'assistant') return turn;
+
+    for (const attr of ['data-message-author', 'data-conversation-role', 'data-message-role', 'data-role']) {
+      const value = (el.getAttribute(attr) || '').toLowerCase();
+      if (value === 'user' || value === 'assistant') return value;
+    }
+
+    const style = (el.getAttribute('data-markdown-text-style') || '').toLowerCase();
+    if (style === 'user-message') return 'user';
+    if (style === 'assistant-message') return 'assistant';
+
+    for (const attr of ['data-chatgpt-search-unit-key', 'data-content-search-unit-key']) {
+      const key = (el.getAttribute(attr) || '').toLowerCase();
+      if (key.endsWith(':user')) return 'user';
+      if (key.endsWith(':assistant')) return 'assistant';
+    }
+
+    const bubble = el.getAttribute('data-user-message-bubble');
+    if (bubble !== null && bubble !== 'false') return 'user';
+
+    const cls = (el.getAttribute('class') || '').toLowerCase();
+    if (/(assistant-message|chatgpt-message|dilresponse|response-root|agent-turn|assistant-turn)/.test(cls)) return 'assistant';
+    if (/(user-message|dilprompt|prompt-root|user-turn)/.test(cls)) return 'user';
+
+    // Dil renderer nodes are usually assistant responses, but prompt roots use
+    // the same message-id attribute, so check the class first (above).
+    if (el.hasAttribute('data-dil-message-id')) return 'assistant';
+
+    const testid = (el.getAttribute('data-testid') || '').toLowerCase();
+    if (testid.includes('assistant') && !testid.includes('user')) return 'assistant';
+    if (testid.includes('user') && !testid.includes('assistant')) return 'user';
+
+    return null;
+  }
+
+  function roleFromTree(el) {
+    const direct = explicitRole(el);
+    if (direct) return direct;
+
+    let node = el.parentElement;
+    let depth = 0;
+    while (node && node !== document.body && depth < 12) {
+      const role = explicitRole(node);
+      if (role) return role;
+      node = node.parentElement;
+      depth += 1;
+    }
+
+    const nested = el.querySelector(
+      '[data-message-author-role], [data-markdown-text-style], [data-turn], ' +
+      '[data-user-message-bubble], [data-dil-message-id]'
+    );
+    return explicitRole(nested);
+  }
+
+  function getConversationRoot() {
+    const selectors = [
+      '[data-thread-find-target="conversation"]',
+      '#thread',
+      '[data-testid="thread"]',
+      'main'
+    ];
+
+    for (const selector of selectors) {
+      const el = document.querySelector(selector);
+      if (el) return el;
+    }
+
+    return document.body;
+  }
+
+  function isExcludedRegion(el) {
+    return Boolean(el.closest(
+      'nav, aside, [role="navigation"], [data-thread-user-message-navigation-content]'
+    ));
+  }
+
+  function findMessageWrapper(el) {
+    return el.closest(
+      '[data-turn="user"], [data-turn="assistant"], ' +
+      '[data-turn-id-container], ' +
+      '[data-chatgpt-selection-message-id], ' +
+      '[data-chatgpt-search-unit-key], [data-content-search-unit-key], ' +
+      '[data-testid*="conversation-turn"], article'
+    ) || el;
+  }
+
+  /**
+   * Make sure a wrapper really represents a single message. Some ChatGPT
+   * layouts put a prompt and its answer inside one container; using that as
+   * the identity would merge the two messages together.
+   */
+  function wrapperRoleMatches(wrapper, role) {
+    if (!wrapper) return false;
+
+    const roles = new Set();
+    const wrapperRole = explicitRole(wrapper);
+    if (wrapperRole) roles.add(wrapperRole);
+
+    wrapper.querySelectorAll(
+      '[data-message-author-role], [data-markdown-text-style], [data-turn], ' +
+      '[data-user-message-bubble], [data-dil-message-id]'
+    ).forEach((node) => {
+      const nodeRole = explicitRole(node);
+      if (nodeRole) roles.add(nodeRole);
+    });
+
+    return roles.size <= 1 && (roles.size === 0 || roles.has(role));
+  }
+
+  function getMessageUniqueId(el) {
+    let node = el;
+    let depth = 0;
+
+    while (node && node !== document.body && depth < 8) {
+      const id = node.getAttribute('data-message-id') ||
+        node.getAttribute('data-chatgpt-selection-message-id');
+      if (id) return id;
+      node = node.parentElement;
+      depth += 1;
+    }
+
+    return null;
+  }
+
+  function logDomSample() {
+    // Sample a broader set of elements so future layout changes are easier to diagnose.
+    const nodes = Array.from(document.querySelectorAll(
+      'article, [data-testid], [data-message-author-role], [data-virtualized-turn-content], ' +
+      '[data-markdown-text-style], [data-user-message-bubble], [data-turn], ' +
+      '[data-chatgpt-search-unit-key], [data-content-search-unit-key], ' +
+      '[data-chatgpt-selection-message-id], [data-dil-message-id], ' +
+      '[class*="DilResponseRoot"], [class*="DilPromptRoot"], ' +
+      'main, [class*="turn"], [class*="message"], [class*="conversation"], ' +
+      '[class*="user-message"], [class*="assistant-message"]'
+    )).slice(0, 80);
+    const sample = nodes.map((el) => {
+      const attrs = [];
+      if (el.tagName) attrs.push(el.tagName.toLowerCase());
+      const testid = el.getAttribute('data-testid');
+      if (testid) attrs.push('data-testid="' + testid + '"');
+      const role = el.getAttribute('data-message-author-role');
+      if (role) attrs.push('data-message-author-role="' + role + '"');
+      const cls = (el.className || '').toString().split(/\s+/).slice(0, 3).join(' ');
+      if (cls) attrs.push('class="' + cls + (el.classList.length > 3 ? ' ...' : '') + '"');
+      return '<' + attrs.join(' ') + '>';
+    }).join(', ');
+    log('DOM sample:', sample || '(no matching elements)');
+  }
+
+  /**
+   * Find the richest text container inside a message wrapper.
+   * We prefer known ChatGPT classes first, then fall back to a
+   * decent generic selector.
+   */
+  function findContentContainer(root, role) {
+    // Dil renderer responses are self-contained: their root node already holds
+    // all of the message content across multiple direct children, so do not try
+    // to drill into a single child container.
+    if (root.hasAttribute('data-dil-message-id')) {
+      return root;
+    }
+    const isDilClass = (root.getAttribute('class') || '').toLowerCase().includes('dil');
+    if (isDilClass && root.querySelector('[data-dil-message-id]')) {
+      return root.querySelector('[data-dil-message-id]');
+    }
+
+    const roleSpecific = role === 'user'
+      ? [
+          '[data-markdown-text-style="user-message"]',
+          '[data-user-message-bubble]',
+          '.whitespace-pre-wrap',
+          '.break-words',
+          '[class*="text-message"]',
+          '[data-message-content="true"]'
+        ]
+      : [
+          '[data-markdown-text-style="assistant-message"]',
+          '[data-dil-message-id]',
+          '.markdown',
+          '.prose',
+          '[class*="prose"]',
+          '.break-words',
+          '[class*="text-message"]',
+          '[data-message-content="true"]'
+        ];
+
+    const generic = [
+      'div > div:last-child',
+      '> div'
+    ];
+
+    for (const selector of roleSpecific.concat(generic)) {
+      try {
+        const el = root.querySelector(selector);
+        if (el && hasVisibleText(el)) {
+          return el;
+        }
+      } catch (_) {
+        // Ignore invalid selectors in older browsers.
+      }
+    }
+
+    return root;
+  }
+
+  /**
+   * Primary extractor for the current (2025/2026) ChatGPT DOM.
+   *
+   * The newer layout does not consistently put data-message-author-role on
+   * assistant replies. User prompts may keep that attribute while ChatGPT
+   * answers only expose data-markdown-text-style="assistant-message",
+   * data-chatgpt-search-unit-key="...:assistant" or a Dil response root.
+   * Query every known marker and merge the results so neither side is lost.
+   */
+  const ROLE_MARKER_GROUPS = [
+    {
+      selector: '[data-message-author-role]',
+      priority: 1,
+      role: explicitRole
+    },
+    {
+      selector: '[data-markdown-text-style="user-message"], [data-markdown-text-style="assistant-message"]',
+      priority: 2,
+      role: explicitRole
+    },
+    {
+      selector: '[data-chatgpt-search-unit-key$=":user"], [data-chatgpt-search-unit-key$=":assistant"], ' +
+        '[data-content-search-unit-key$=":user"], [data-content-search-unit-key$=":assistant"], ' +
+        '[data-message-author], [data-conversation-role], [data-message-role]',
+      priority: 3,
+      role: explicitRole
+    },
+    {
+      selector: '[data-user-message-bubble]',
+      priority: 4,
+      role: explicitRole
+    },
+    {
+      selector: '[data-dil-message-id]',
+      priority: 5,
+      role: explicitRole
+    },
+    {
+      selector: '[data-turn="user"], [data-turn="assistant"]',
+      priority: 6,
+      role: explicitRole
+    }
+  ];
+
+  function resolveContentElement(el, role) {
+    if (el.matches('[data-markdown-text-style], [data-dil-message-id], [data-user-message-bubble]')) {
+      return el;
+    }
+
+    if (el.matches('[data-message-author-role]')) {
+      return findContentContainer(el, role);
+    }
+
+    const content = findContentContainer(el, role);
+    return content === el ? findTurnContent(el) : content;
+  }
+
+  function extractByRoleMarkers() {
+    const root = getConversationRoot();
+    const candidates = [];
+
+    ROLE_MARKER_GROUPS.forEach((group) => {
+      let nodes;
+      try {
+        nodes = root.querySelectorAll(group.selector);
+      } catch (_) {
+        return;
+      }
+
+      nodes.forEach((el) => {
+        if (isExcludedRegion(el)) return;
+
+        const role = group.role(el) || roleFromTree(el);
+        if (role !== 'user' && role !== 'assistant') return;
+
+        let wrapper = findMessageWrapper(el);
+        if (!wrapperRoleMatches(wrapper, role)) wrapper = el;
+
+        candidates.push({ el, role, priority: group.priority, wrapper });
+      });
+    });
+
+    log('Role-marker candidates:', candidates.length);
+
+    // One logical message can match several markers (for example an assistant
+    // content root inside a Dil response root). Keep the best marker per
+    // message instead of emitting the same answer multiple times.
+    const byMessage = new Map();
+
+    candidates.forEach((candidate) => {
+      const existing = byMessage.get(candidate.wrapper);
+      if (!existing) {
+        byMessage.set(candidate.wrapper, candidate);
+        return;
+      }
+
+      if (existing.role !== candidate.role) {
+        byMessage.set(candidate.el, candidate);
+        return;
+      }
+
+      if (candidate.priority < existing.priority) {
+        byMessage.set(candidate.wrapper, candidate);
+      }
+    });
+
+    const turns = [];
+
+    byMessage.forEach((candidate) => {
+      const content = resolveContentElement(candidate.el, candidate.role);
+      const clean = getCleanContent(content);
+      if (clean.text.length === 0) return;
+
+      turns.push({
+        index: 0,
+        role: candidate.role,
+        text: clean.text,
+        html: clean.html,
+        _el: content
+      });
+    });
+
+    const userCount = turns.filter((t) => t.role === 'user').length;
+    const assistantCount = turns.filter((t) => t.role === 'assistant').length;
+    log('Role-marker turns:', turns.length, '| user:', userCount, '| assistant:', assistantCount);
+
+    return turns;
+  }
+
+  function extractByAuthorRoles() {
+    const turns = [];
+    const root = getConversationRoot();
+
+    const userEls = Array.from(root.querySelectorAll('[data-message-author-role="user"]'))
+      .filter((el) => !isExcludedRegion(el));
+    const assistantEls = Array.from(root.querySelectorAll('[data-message-author-role="assistant"]'))
+      .filter((el) => !isExcludedRegion(el));
+
+    log('Found user elements:', userEls.length, '| assistant elements:', assistantEls.length);
+
+    if (userEls.length === 0 && assistantEls.length === 0) {
+      log('No [data-message-author-role] elements found on this page.');
+      return turns;
+    }
+
+    const all = userEls.map((el) => ({ role: 'user', el }))
+      .concat(assistantEls.map((el) => ({ role: 'assistant', el })));
+
+    // Sort by visual/DOM order.
+    all.sort((a, b) => {
+      const comparison = a.el.compareDocumentPosition(b.el);
+      return comparison & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1;
+    });
+
+    all.forEach((item, index) => {
+      const container = findContentContainer(item.el, item.role);
+      const clean = getCleanContent(container);
+      if (clean.text.length > 0) {
+        turns.push({
+          index: index,
+          role: item.role,
+          text: clean.text,
+          html: clean.html,
+          _el: container
+        });
+      } else {
+        log('Skipping empty', item.role, 'message at index', index);
+      }
+    });
+
+    return turns;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Heuristic helpers for the updated ChatGPT DOM (post-2024/2025 redesign).
+  // ChatGPT no longer reliably exposes data-message-author-role at the top
+  // level, so we infer the speaker from avatars / classes / data attributes.
+  // ---------------------------------------------------------------------------
+
+  function isUserAvatar(el) {
+    if (!el) return false;
+    const alt = (el.getAttribute('alt') || '').toLowerCase();
+    const ariaLabel = (el.getAttribute('aria-label') || '').toLowerCase();
+    const text = (el.textContent || '').trim().toLowerCase();
+    const cls = (el.className || '').toLowerCase();
+    const testid = (el.getAttribute('data-testid') || '').toLowerCase();
+
+    if (alt.includes('user') || ariaLabel.includes('user')) return true;
+    if (testid.includes('user') && !testid.includes('assistant')) return true;
+    if (cls.includes('user') && !cls.includes('assistant')) return true;
+
+    // User avatars are typically simple initials in a circle and contain no SVG logo.
+    const initials = text.replace(/[^a-z]/g, '');
+    if (initials.length >= 1 && initials.length <= 3 && !el.querySelector('svg')) return true;
+
+    // Images that are not the GPT/ChatGPT logo.
+    const img = el.querySelector('img') || (el.tagName === 'IMG' ? el : null);
+    if (img && img.src) {
+      const src = img.src.toLowerCase();
+      if (!src.includes('gpt') && !src.includes('openai') && !src.includes('chatgpt')) return true;
+    }
+
+    return false;
+  }
+
+  function isAssistantAvatar(el) {
+    if (!el) return false;
+    const alt = (el.getAttribute('alt') || '').toLowerCase();
+    const ariaLabel = (el.getAttribute('aria-label') || '').toLowerCase();
+    const cls = (el.className || '').toLowerCase();
+    const testid = (el.getAttribute('data-testid') || '').toLowerCase();
+    const html = (el.innerHTML || '').toLowerCase();
+
+    if (alt.includes('chatgpt') || alt.includes('assistant') || ariaLabel.includes('chatgpt') || ariaLabel.includes('assistant')) return true;
+    if (testid.includes('chatgpt') || testid.includes('assistant')) return true;
+    if (cls.includes('assistant') || cls.includes('chatgpt') || cls.includes('gpt')) return true;
+    if (html.includes('chatgpt') || html.includes('openai') || html.includes('gpt')) return true;
+
+    // Assistant avatars usually contain an SVG logo rather than initials.
+    const svg = el.querySelector('svg');
+    if (svg) {
+      const svgHtml = (svg.outerHTML || '').toLowerCase();
+      if (svgHtml.includes('openai') || svgHtml.includes('chatgpt') || svgHtml.includes('gpt')) return true;
+      const text = (el.textContent || '').trim();
+      if (text.length === 0 || text.length > 3) return true;
+    }
+
+    return false;
+  }
+
+  function determineRole(container, fallbackIndex) {
+    // Walk up the tree looking for explicit role markers in classes,
+    // data attributes, or testids. The role-bearing wrapper is often an
+    // ancestor of the actual content node.
+    let el = container;
+    while (el && el !== document.body) {
+      const explicit = explicitRole(el);
+      if (explicit) return explicit;
+
+      const cls = (el.className || '').toLowerCase();
+      if (cls.includes('user-message') && !cls.includes('assistant-message')) return 'user';
+      if (cls.includes('assistant-message') || cls.includes('chatgpt-message')) return 'assistant';
+      if (cls.includes('dilresponse') || cls.includes('response-root')) return 'assistant';
+      if (cls.includes('dilprompt') || cls.includes('prompt-root')) return 'user';
+      if (cls.includes('user') && !cls.includes('assistant')) return 'user';
+      if (cls.includes('assistant') || cls.includes('chatgpt')) return 'assistant';
+
+      const testid = (el.getAttribute('data-testid') || '').toLowerCase();
+      if (testid.includes('user') && !testid.includes('assistant')) return 'user';
+      if (testid.includes('assistant') || testid.includes('chatgpt')) return 'assistant';
+
+      if (el.hasAttribute('data-dil-message-id')) {
+        const dilClass = (el.getAttribute('class') || '').toLowerCase();
+        if (dilClass.includes('dilresponse')) return 'assistant';
+        if (dilClass.includes('dilprompt')) return 'user';
+        // Default Dil renderer nodes without a clear role class are usually
+        // assistant responses in this layout.
+        return 'assistant';
+      }
+
+      el = el.parentElement;
+    }
+
+    // Inspect the avatar.
+    const avatar = container.querySelector('img, svg, [role="img"]');
+    if (avatar) {
+      let wrapper = avatar.closest('[class*="avatar"]') || avatar.parentElement;
+      if (isUserAvatar(wrapper)) return 'user';
+      if (isAssistantAvatar(wrapper)) return 'assistant';
+      if (isUserAvatar(avatar)) return 'user';
+      if (isAssistantAvatar(avatar)) return 'assistant';
+    }
+
+    // Fallback: alternate, starting with user.
+    return fallbackIndex % 2 === 0 ? 'user' : 'assistant';
+  }
+
+  function findTurnContent(container) {
+    // Prefer an explicitly marked content node.
+    const explicit = container.querySelector('[data-message-content="true"]');
+    if (explicit && hasVisibleText(explicit)) return explicit;
+
+    // Avoid the avatar area and action bars; collect text-bearing blocks.
+    const candidates = Array.from(container.querySelectorAll('div, section, article'))
+      .filter((el) => {
+        if (!hasVisibleText(el)) return false;
+        // Skip tiny avatar wrappers (image/initial with almost no text).
+        if (el.querySelector('img, svg, [role="img"]') && el.textContent.trim().length <= 3) return false;
+        // Skip action bars that contain direct buttons.
+        const hasDirectButton = Array.from(el.children).some((child) => {
+          return child.tagName === 'BUTTON' || child.getAttribute('role') === 'button';
+        });
+        if (hasDirectButton) return false;
+        return true;
+      });
+
+    // Remove ancestor candidates so we don't pick a wrapper that still contains
+    // the avatar or other turns.
+    const deepest = candidates.filter((a) => {
+      return !candidates.some((b) => b !== a && a.contains(b));
+    });
+
+    // Pick the deepest block with the most visible text.
+    deepest.sort((a, b) => (b.innerText || '').length - (a.innerText || '').length);
+    if (deepest.length > 0) return deepest[0];
+
+    return container;
+  }
+
+  /**
+   * Extract turns from article elements. This handles both the old layout
+   * (article[data-testid^="conversation-turn-"]) and newer layouts where
+   * the conversation is a flat list of <article> tags inside <main>.
+   */
+  function extractByArticlesV2() {
+    const turns = [];
+    const root = getConversationRoot();
+
+    let containers = Array.from(root.querySelectorAll('article[data-testid*="conversation-turn"]'));
+    if (containers.length === 0) {
+      containers = Array.from(root.querySelectorAll('article'));
+    }
+    if (containers.length === 0) {
+      containers = Array.from(document.querySelectorAll('article'));
+    }
+    containers = containers.filter((el) => !isExcludedRegion(el));
+
+    log('Article turns found:', containers.length);
+
+    containers.forEach((article, index) => {
+      const role = determineRole(article, index);
+      let content = findContentContainer(article, role);
+      if (content === article) {
+        content = findTurnContent(article);
+      }
+      const clean = getCleanContent(content);
+      if (clean.text.length > 0) {
+        turns.push({
+          index: index,
+          role: role,
+          text: clean.text,
+          html: clean.html,
+          _el: content
+        });
+      } else {
+        log('Skipping empty article at index', index);
+      }
+    });
+
+    return turns;
+  }
+
+  /**
+   * Some redesigns wrap turns in <div data-testid="conversation-turn-N">
+   * rather than <article>. Try those when articles fail.
+   */
+  function extractByTurnDivs() {
+    const turns = [];
+    const root = getConversationRoot();
+    const turnDivs = Array.from(root.querySelectorAll('[data-testid*="conversation-turn"]'))
+      .filter((el) => !isExcludedRegion(el));
+
+    log('Turn divs found:', turnDivs.length);
+
+    turnDivs.forEach((div, index) => {
+      const role = determineRole(div, index);
+      let content = findContentContainer(div, role);
+      if (content === div) {
+        content = findTurnContent(div);
+      }
+      const clean = getCleanContent(content);
+      if (clean.text.length > 0) {
+        turns.push({
+          index: index,
+          role: role,
+          text: clean.text,
+          html: clean.html,
+          _el: content
+        });
+      }
+    });
+
+    return turns;
+  }
+
+  /**
+   * ChatGPT's 2025/2026 layout uses classes like group/user-message and
+   * bg-user-message / text-user-message instead of data-message-author-role.
+   * Find those role-bearing elements directly.
+   */
+  function extractByMessageClasses() {
+    const turns = [];
+    // Broad selectors to catch both current and slightly-varied message wrappers.
+    // The data-virtualized-turn-content node is the actual content node in the
+    // latest ChatGPT layout, so include it as a candidate too.
+    const root = getConversationRoot();
+    const messageEls = Array.from(root.querySelectorAll(
+      '[class*="user-message"], [class*="assistant-message"], ' +
+      '[class*="chatgpt-message"], [class*="bot-message"], ' +
+      '[class*="response-message"], [data-virtualized-turn-content], ' +
+      '[data-dil-message-id], [class*="DilResponseRoot"], [class*="DilPromptRoot"]'
+    )).filter((el) => !isExcludedRegion(el));
+
+    log('Message-class elements found:', messageEls.length);
+
+    if (messageEls.length === 0) {
+      return turns;
+    }
+
+    // Keep the innermost matching element per message to avoid wrapping duplicates.
+    const unique = messageEls.filter((a) => {
+      return !messageEls.some((b) => b !== a && a.contains(b));
+    });
+
+    unique.forEach((el, index) => {
+      const role = determineRole(el, index);
+      let content;
+      // Dil-rendered responses (and prompts) have hashed CSS classes and their
+      // content is spread across multiple direct children (p, h2, h3, code
+      // blocks, etc.). The root node itself is the correct container.
+      const isDilElement = el.hasAttribute('data-dil-message-id') ||
+        (el.getAttribute('class') || '').toLowerCase().includes('dil') ||
+        el.querySelector('[data-dil-message-id]');
+      if (isDilElement) {
+        content = el.hasAttribute('data-dil-message-id') ? el : el.querySelector('[data-dil-message-id]');
+      } else {
+        content = findContentContainer(el, role);
+        if (content === el) {
+          content = findTurnContent(el);
+        }
+      }
+      const clean = getCleanContent(content);
+      if (clean.text.length > 0) {
+        turns.push({
+          index: index,
+          role: role,
+          text: clean.text,
+          html: clean.html,
+          _el: content
+        });
+      }
+    });
+
+    const userCount = turns.filter((t) => t.role === 'user').length;
+    const assistantCount = turns.filter((t) => t.role === 'assistant').length;
+    log('Message-class turns:', turns.length, '| user:', userCount, '| assistant:', assistantCount);
+
+    return turns;
+  }
+
+  /**
+   * Newer layouts mark the actual message content with
+   * data-virtualized-turn-content. Use that as the content container and infer
+   * the role from nearby message classes or avatars.
+   */
+  function extractByVirtualizedContent() {
+    const turns = [];
+    const root = getConversationRoot();
+    const contentEls = Array.from(root.querySelectorAll('[data-virtualized-turn-content]'))
+      .filter((el) => !isExcludedRegion(el));
+
+    log('Virtualized turn content elements found:', contentEls.length);
+
+    if (contentEls.length === 0) {
+      return turns;
+    }
+
+    contentEls.forEach((el, index) => {
+      // Walk up the tree looking for a role hint in ancestor classes.
+      let role = roleFromTree(el);
+      let ancestor = el;
+
+      while (!role && ancestor) {
+        const cls = (ancestor.className || '').toLowerCase();
+        if (cls.includes('user-message') && !cls.includes('assistant-message')) {
+          role = 'user';
+          break;
+        }
+        if (cls.includes('assistant-message') || cls.includes('chatgpt-message')) {
+          role = 'assistant';
+          break;
+        }
+        ancestor = ancestor.parentElement;
+      }
+
+      if (!role) {
+        role = determineRole(el, index);
+      }
+
+      const clean = getCleanContent(el);
+      if (clean.text.length > 0) {
+        turns.push({
+          index: index,
+          role: role,
+          text: clean.text,
+          html: clean.html,
+          _el: el
+        });
+      }
+    });
+
+    const userCount = turns.filter((t) => t.role === 'user').length;
+    const assistantCount = turns.filter((t) => t.role === 'assistant').length;
+    log('Virtualized-content turns:', turns.length, '| user:', userCount, '| assistant:', assistantCount);
+
+    return turns;
+  }
+
+  function countRoles(turns) {
+    return {
+      user: turns.filter((t) => t.role === 'user').length,
+      assistant: turns.filter((t) => t.role === 'assistant').length
+    };
+  }
+
+  function sortTurnsByDom(turns) {
+    return turns.slice().sort((a, b) => {
+      if (!a._el || !b._el) return 0;
+
+      const comparison = a._el.compareDocumentPosition(b._el);
+      if (comparison & Node.DOCUMENT_POSITION_FOLLOWING) return -1;
+      if (comparison & Node.DOCUMENT_POSITION_PRECEDING) return 1;
+      return 0;
+    });
+  }
+
+  function sameLogicalMessage(a, b) {
+    if (a.role !== b.role) return false;
+    if (a._el === b._el) return true;
+
+    const aId = getMessageUniqueId(a._el);
+    const bId = getMessageUniqueId(b._el);
+    if (aId && bId && aId === bId) return true;
+
+    if (a._el && b._el && (a._el.contains(b._el) || b._el.contains(a._el))) {
+      return a.text.includes(b.text) || b.text.includes(a.text);
+    }
+
+    return false;
+  }
+
+  function dedupeTurns(turns) {
+    const unique = [];
+
+    turns.forEach((turn) => {
+      if (!unique.some((existing) => sameLogicalMessage(existing, turn))) {
+        unique.push(turn);
+      }
+    });
+
+    return unique;
+  }
+
+  function finalizeTurns(turns) {
+    return sortTurnsByDom(dedupeTurns(turns))
+      .filter((turn) => turn.role === 'user' || turn.role === 'assistant')
+      .filter((turn) => turn.text && turn.text.trim().length > 0)
+      .map((turn, index) => ({
+        index: index,
+        role: turn.role,
+        text: turn.text.trim(),
+        html: turn.html || ''
+      }));
+  }
+
+  function extractTurns() {
+    const root = getConversationRoot();
+    log('Conversation root:', root.tagName, root.getAttribute('data-testid') || '');
+
+    const roleMarkerTurns = extractByRoleMarkers();
+    const initialCounts = countRoles(roleMarkerTurns);
+
+    if (initialCounts.user > 0 && initialCounts.assistant > 0) {
+      return finalizeTurns(roleMarkerTurns);
+    }
+
+    log('Role-marker extraction incomplete; checking legacy layouts.');
+    log('Falling back to author-role extraction.');
+    log('Falling back to article-based extraction (v2).');
+    log('Falling back to message-class extraction.');
+    log('Falling back to virtualized-turn-content extraction.');
+    log('Falling back to turn-div extraction.');
+
+    const fallbacks = [
+      extractByAuthorRoles,
+      extractByArticlesV2,
+      extractByMessageClasses,
+      extractByVirtualizedContent,
+      extractByTurnDivs
+    ];
+
+    const merged = roleMarkerTurns.slice();
+
+    fallbacks.forEach((extractor) => {
+      const counts = countRoles(merged);
+      if (counts.user > 0 && counts.assistant > 0) return;
+
+      const extra = extractor();
+      if (!extra || extra.length === 0) return;
+
+      const missingRole = counts.user === 0 ? 'user' : (counts.assistant === 0 ? 'assistant' : null);
+
+      extra.forEach((turn) => {
+        // If one role was found already, only merge the missing role so the
+        // same messages are not added twice.
+        if (!missingRole || turn.role === missingRole) merged.push(turn);
+      });
+    });
+
+    const finalTurns = finalizeTurns(merged);
+    const finalCounts = countRoles(finalTurns);
+
+    log('Total extracted turns:', finalTurns.length, '| user:', finalCounts.user, '| assistant:', finalCounts.assistant);
+
+    if (finalTurns.length === 0) {
+      logDomSample();
+    }
+
+    return finalTurns;
+  }
+
+  chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+    if (request && request.action === 'EXTRACT_CHAT') {
+      try {
+        const turns = extractTurns();
+        sendResponse({
+          turns: turns,
+          title: document.title,
+          url: location.href
+        });
+      } catch (err) {
+        log('Extraction error:', err);
+        sendResponse({ error: err.message });
+      }
+    }
+    return true;
+  });
+})();

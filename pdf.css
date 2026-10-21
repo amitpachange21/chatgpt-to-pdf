@@ -1,0 +1,374 @@
+/* General page layout */
+* {
+  box-sizing: border-box;
+}
+
+html, body {
+  margin: 0;
+  padding: 0;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  background: #f9fafb;
+  color: #111827;
+  line-height: 1.6;
+}
+
+/* Toolbar shown only on screen */
+.toolbar {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  background: #ffffff;
+  border-bottom: 1px solid #e5e7eb;
+  padding: 12px 24px;
+  z-index: 1000;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+}
+
+.toolbar-inner {
+  max-width: 900px;
+  margin: 0 auto;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.title-group {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.toolbar-label {
+  font-size: 12px;
+  font-weight: 700;
+  color: #6b7280;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+}
+
+.chat-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: #111827;
+}
+
+.toolbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.btn-primary {
+  background: #2563eb;
+  color: #ffffff;
+  border: none;
+  border-radius: 8px;
+  padding: 10px 18px;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s ease;
+  white-space: nowrap;
+}
+
+.btn-primary:hover {
+  background: #1d4ed8;
+}
+
+.btn-secondary {
+  background: #ffffff;
+  color: #374151;
+  border: 1px solid #d1d5db;
+  border-radius: 8px;
+  padding: 9px 18px;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s ease;
+  white-space: nowrap;
+}
+
+.btn-secondary:hover {
+  background: #f9fafb;
+}
+
+.btn-primary:disabled,
+.btn-secondary:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+/* Printed page */
+.page {
+  max-width: 900px;
+  margin: 0 auto;
+  padding: 100px 24px 48px;
+  background: #ffffff;
+  min-height: 100vh;
+}
+
+.doc-header {
+  text-align: center;
+  margin-bottom: 40px;
+  padding-bottom: 24px;
+  border-bottom: 1px solid #e5e7eb;
+}
+
+.doc-header h1 {
+  font-size: 22px;
+  margin: 0 0 8px;
+  color: #111827;
+}
+
+.doc-url {
+  font-size: 12px;
+  color: #6b7280;
+  word-break: break-all;
+  margin: 0;
+}
+
+.conversation {
+  display: flex;
+  flex-direction: column;
+  gap: 28px;
+}
+
+/* Message turns */
+.turn {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+  width: 100%;
+}
+
+.user-turn {
+  flex-direction: row-reverse;
+}
+
+.assistant-turn {
+  flex-direction: row;
+}
+
+.avatar {
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  font-weight: 700;
+  flex-shrink: 0;
+  color: #ffffff;
+}
+
+.user-turn .avatar {
+  background: #10b981;
+}
+
+.assistant-turn .avatar {
+  background: #3b82f6;
+}
+
+.message {
+  max-width: 78%;
+  padding: 14px 18px;
+  border-radius: 16px;
+  font-size: 15px;
+}
+
+.user-turn .message {
+  background: #f3f4f6;
+  color: #111827;
+  border-bottom-right-radius: 4px;
+}
+
+.assistant-turn .message {
+  background: #ffffff;
+  color: #111827;
+  border: 1px solid #e5e7eb;
+  border-bottom-left-radius: 4px;
+}
+
+/* Message content resets */
+.message > :first-child {
+  margin-top: 0;
+}
+
+.message > :last-child {
+  margin-bottom: 0;
+}
+
+.message p {
+  margin: 0 0 12px;
+}
+
+.message h1,
+.message h2,
+.message h3,
+.message h4 {
+  margin: 18px 0 10px;
+  color: #111827;
+}
+
+.message ul,
+.message ol {
+  margin: 10px 0;
+  padding-left: 26px;
+}
+
+.message li {
+  margin-bottom: 6px;
+}
+
+.message blockquote {
+  border-left: 4px solid #e5e7eb;
+  padding-left: 16px;
+  margin: 12px 0;
+  color: #4b5563;
+}
+
+.message a {
+  color: #2563eb;
+  text-decoration: none;
+}
+
+.message img {
+  max-width: 100%;
+  height: auto;
+  border-radius: 8px;
+  margin: 8px 0;
+}
+
+/* Code blocks */
+pre {
+  background: #1f2937;
+  color: #f9fafb;
+  padding: 16px;
+  border-radius: 10px;
+  overflow-x: auto;
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  font-size: 13px;
+  line-height: 1.55;
+  margin: 14px 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+code {
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  font-size: 0.92em;
+}
+
+p code,
+li code,
+h1 code,
+h2 code,
+h3 code {
+  background: #f3f4f6;
+  color: #be123c;
+  padding: 2px 6px;
+  border-radius: 5px;
+  font-size: 0.88em;
+}
+
+pre code {
+  background: transparent;
+  color: inherit;
+  padding: 0;
+  border-radius: 0;
+  font-size: inherit;
+}
+
+/* Tables */
+table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 14px 0;
+  font-size: 14px;
+}
+
+th, td {
+  border: 1px solid #d1d5db;
+  padding: 9px 12px;
+  text-align: left;
+  vertical-align: top;
+}
+
+th {
+  background: #f9fafb;
+  font-weight: 600;
+}
+
+tr:nth-child(even) {
+  background: #f9fafb;
+}
+
+/* Print rules */
+@media print {
+  @page {
+    margin: 12mm;
+  }
+
+  .no-print {
+    display: none !important;
+  }
+
+  body {
+    background: #ffffff;
+  }
+
+  .page {
+    padding: 0;
+    max-width: 100%;
+    min-height: auto;
+  }
+
+  .doc-header {
+    margin-bottom: 18px;
+    padding-bottom: 14px;
+    break-after: avoid;
+  }
+
+  .avatar,
+  .user-turn .message,
+  .assistant-turn .message,
+  pre,
+  th,
+  tr:nth-child(even) {
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+  }
+
+  /* Allow turns and messages to flow naturally across pages so short
+     user prompts and assistant responses stay together instead of
+     being pushed to separate pages with blank space between them. */
+  .turn,
+  .message {
+    break-inside: auto;
+    page-break-inside: auto;
+  }
+
+  /* Keep code blocks, tables, and blockquotes intact when possible. */
+  pre,
+  table,
+  blockquote {
+    break-inside: avoid;
+    page-break-inside: avoid;
+  }
+
+  .message {
+    max-width: 82%;
+  }
+
+  .message p,
+  .message li {
+    orphans: 3;
+    widows: 3;
+  }
+
+  .conversation {
+    gap: 18px;
+  }
+}

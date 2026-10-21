@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ChatGPT PDF Preview</title>
+  <link rel="stylesheet" href="pdf.css">
+</head>
+<body>
+  <div class="toolbar no-print">
+    <div class="toolbar-inner">
+      <div class="title-group">
+        <span class="toolbar-label">PDF Preview</span>
+        <span id="chatTitle" class="chat-title"></span>
+      </div>
+      <div class="toolbar-actions">
+        <button id="printBtn" class="btn-secondary">Print / Save as PDF</button>
+        <button id="downloadBtn" class="btn-primary">Download exact PDF</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="page">
+    <header class="doc-header">
+      <h1 id="docTitle">ChatGPT Conversation</h1>
+      <p id="docUrl" class="doc-url"></p>
+    </header>
+    <div id="conversation" class="conversation"></div>
+  </div>
+
+  <script src="libs/html2canvas.min.js"></script>
+  <script src="libs/jspdf.umd.min.js"></script>
+  <script src="pdf.js"></script>
+</body>
+</html>

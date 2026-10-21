@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Select Chat Messages</title>
+  <link rel="stylesheet" href="selector.css">
+</head>
+<body>
+  <div class="app">
+    <header class="header">
+      <h1>Select messages to export</h1>
+      <p class="subhead">Choose the user prompts and ChatGPT responses you want in the PDF.</p>
+    </header>
+
+    <div class="global-actions">
+      <button id="selectAllBtn" class="btn-link">Select all</button>
+      <span class="divider">|</span>
+      <button id="deselectAllBtn" class="btn-link">Deselect all</button>
+      <span class="divider">|</span>
+      <button id="selectUserBtn" class="btn-link">User only</button>
+      <span class="divider">|</span>
+      <button id="selectAssistantBtn" class="btn-link">ChatGPT only</button>
+    </div>
+
+    <main id="list" class="list"></main>
+
+    <footer class="footer">
+      <div id="summary" class="summary">0 messages selected</div>
+      <button id="doneBtn" class="btn-primary">Done</button>
+    </footer>
+  </div>
+  <script src="selector.js"></script>
+</body>
+</html>
